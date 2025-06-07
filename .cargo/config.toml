@@ -1,0 +1,11 @@
+[env]
+RUST_BACKTRACE = "1"
+RUST_LOG = "info"
+IMAGE_FOLDER = "/home/nicolas/Downloads"
+MQTT_BROKER = "192.168.1.121"
+
+[target.armv7-unknown-linux-musleabihf]
+linker = "arm-linux-gnueabihf-ld"
+
+[target.arm-unknown-linux-musleabihf]
+linker = "arm-linux-gnueabihf-ld"
