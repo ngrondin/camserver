@@ -1,7 +1,9 @@
-use std::{sync::{mpsc::Sender, Arc, Mutex}, time::{SystemTime, UNIX_EPOCH}};
+use std::{sync::{mpsc::Sender, Arc}, time::{SystemTime, UNIX_EPOCH}};
 
 use chrono::{DateTime, Utc};
+use log::info;
 use rumqttc::{AsyncClient, QoS};
+use tokio::sync::Mutex;
 use crate::{mqtt::MQTTState, stream::StreamReceiverState};
 
 
@@ -85,96 +87,83 @@ impl AppState {
         }
     }
 
-    pub fn set_camera_stat(&self, name: &str, ip: &str, lum: u8) {
-        if let Ok(mut lock) = self.cameras.lock() {
+    pub async fn set_camera_stat(&self, name: &str, ip: &str, lum: u8) {
+        let mut lock = self.cameras.lock().await;
+        //if let Ok(mut lock) = self.cameras.lock().await {
             let cam_info = match lock.get_mut_camera_from_name(name) {
                 Some(cam_info) => cam_info,
                 None => lock.add_camera(name)
             };
             cam_info.ip = ip.to_string();
             cam_info.lum = lum;
-        };
+        //};
     }
 
-    pub fn for_camera<FT, RT>(&self, name: &str, func: FT) -> Option<RT>
+    pub async fn for_camera<FT, RT>(&self, name: &str, func: FT) -> Option<RT>
     where FT: Fn(&CameraInfo) -> RT {
-        if let Ok(lock) = self.cameras.lock() {
-            if let Some(cam_info) = lock.get_camera_from_name(name) {
-                let ret = func(cam_info);
-                return Some(ret);
-            }     
-        } 
+        let lock = self.cameras.lock().await;
+        if let Some(cam_info) = lock.get_camera_from_name(name) {
+            let ret = func(cam_info);
+            return Some(ret);
+        }     
         None
     }
 
-    pub fn for_mut_camera<FT, RT>(&self, name: &str, func: FT) -> Option<RT>
+    pub async fn for_mut_camera<FT, RT>(&self, name: &str, func: FT) -> Option<RT>
     where FT: Fn(&mut CameraInfo) -> RT {
-        if let Ok(mut lock) = self.cameras.lock() {
-            if let Some(cam_info) = lock.get_mut_camera_from_name(name) {
-                let ret = func(cam_info);
-                return Some(ret);
-            }           
-        } 
+        let mut lock = self.cameras.lock().await;
+        if let Some(cam_info) = lock.get_mut_camera_from_name(name) {
+            let ret = func(cam_info);
+            return Some(ret);
+        }           
         None
     }
 
-    pub fn for_all_cameras<FT, RT>(&self, func: FT) -> Vec<RT>
+    pub async fn for_all_cameras<FT, RT>(&self, func: FT) -> Vec<RT>
     where FT: Fn(&CameraInfo) -> RT {
-        if let Ok(lock) = self.cameras.lock() {
-            let all_cams = lock.get_all_cameras();
-            all_cams.iter().map(|cam_info| func(&cam_info)).collect()
-        } else {
-            vec![]
-        }
+        let lock = self.cameras.lock().await;
+        let all_cams = lock.get_all_cameras();
+        all_cams.iter().map(|cam_info| func(&cam_info)).collect()
     }
 }
 
 
 
 impl MQTTState for AppState {
-    fn set_mqtt_client(&self, client: AsyncClient) {
-        let mut locked_client_option = self.mqttclient.lock().unwrap();
-        *locked_client_option = Some(client);
+    async fn set_mqtt_client(&self, client: AsyncClient) {
+        let mut client_option = self.mqttclient.lock().await;
+        *client_option = Some(client);
     }
 
     async fn mqtt_client_subscribe(&self, topic: &str) {
-        let mut locked_client_option = self.mqttclient.lock().unwrap();
-        match locked_client_option.as_mut() {
-            Some(client) => {
-                let _ = client.subscribe(topic, QoS::AtMostOnce).await;
-            },
-            None => {},
+        let client_option = self.mqttclient.lock().await;
+        if let Some(client) = client_option.as_ref() {
+            let _ = client.subscribe(topic, QoS::AtMostOnce).await;
         }
     }
 
     async fn mqtt_publish(&self, topic: &str, body: &str) {
-        print!("mqtt publish {} {}\n", topic, body);
-        let mut locked_client_option = self.mqttclient.lock().unwrap();
-        match locked_client_option.as_mut() {
-            Some(client) => {
-                let _ = client.publish(topic, QoS::AtMostOnce, true, body).await;
-            },
-            None => {},
-        }    
+        info!("MQTT publish {} {}", topic, body);
+        let client_option = self.mqttclient.lock().await;
+        if let Some(client) = client_option.as_ref() {
+            let _ = client.publish(topic, QoS::AtMostOnce, true, body).await;
+        }
     }
 }
 
 
 impl StreamReceiverState for AppState {
-    fn set_stream_image(&self, stream_id: u8, data: Arc<Vec<u8>>) {
-        if let Ok(mut lock) = self.cameras.lock() {
-            if let Some(cam) = lock.get_mut_camera_from_stream_id(stream_id) {
-                cam.image = data.clone();
-                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().subsec_millis();
-                //let since = if now > cam.last_image {now - cam.last_image} else {0};
-                cam.last_image = now;
-                for sender in cam.senders.iter() {
-                    match sender.send(cam.image.clone()) {
-                        Err(_) => {},
-                        _ => {}
-                    }
+    async fn set_stream_image(&self, stream_id: u8, data: Arc<Vec<u8>>) {
+        let mut lock = self.cameras.lock().await;
+        if let Some(cam) = lock.get_mut_camera_from_stream_id(stream_id) {
+            cam.image = data.clone();
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().subsec_millis();
+            cam.last_image = now;
+            for sender in cam.senders.iter() {
+                match sender.send(cam.image.clone()) {
+                    Err(_) => {},
+                    _ => {}
                 }
-                //println!("Received image in stream {}: {}ms", stream_id, since);
             }
         }
     }

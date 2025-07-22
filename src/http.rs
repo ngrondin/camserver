@@ -13,7 +13,7 @@ struct CameraUIData {
 async fn index(state: web::Data<AppState>,) -> Result<HttpResponse, Error> {
     let cams = state.for_all_cameras(|cam| {
         CameraUIData { name: cam.name.to_owned(), ip: cam.ip.to_owned(), stream_id: cam.stream_id }
-    });
+    }).await;
 
     let html = html! {
         (DOCTYPE)

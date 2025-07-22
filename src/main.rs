@@ -11,6 +11,7 @@ use actix_web::{get, http::Error, post, web::{self, Bytes, Data}, App, HttpRespo
 use chrono::{DateTime, Utc};
 use http::index;
 use image::spawn_imager;
+use log::info;
 use mqtt::{MQTTServer, MQTTState};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -58,7 +59,7 @@ struct MovementResponse {
 async fn get_movements(state: web::Data<AppState>, cam_name: web::Path<String>) -> Result<HttpResponse, Error> {
     let mvts_opt: Option<Vec<MovementItemResponse>> = state.for_camera(cam_name.as_str(), |cam| {
         cam.moves.iter().map(|m| MovementItemResponse{ timestamp: *m}).collect()
-    });
+    }).await;
     let resp = MovementResponse { movements: mvts_opt.unwrap_or(vec![]) };
     Ok(HttpResponse::Ok().json(resp))
 }
@@ -75,7 +76,7 @@ async fn get_stream(state: web::Data<AppState>, cam_name: web::Path<String>) -> 
     let (tx, rx) = mpsc::channel::<Arc<Vec<u8>>>();
     state.for_mut_camera(cam_name.as_str(), |cam| {
         cam.add_sender(tx.clone());
-    });
+    }).await;
     Ok(HttpResponse::Ok()
         .content_type("multipart/x-mixed-replace;boundary=123456789000000000000987654321")
         .streaming(stream! {
@@ -89,25 +90,21 @@ async fn get_stream(state: web::Data<AppState>, cam_name: web::Path<String>) -> 
     )
 }
 
-    //let stream = JPGStreamSender::new(rx);
-    //Ok(HttpResponse::Ok().content_type(stream.content_type).streaming(stream))
-
-
-fn mqtt_cam_stat(state: &AppState, topic: &str, body: &Value) {
-    print!("Cam Stat {}: {}\n", topic, body);
+async fn mqtt_cam_stat(state: AppState, topic: String, body: Value) {
     let name = &topic[10..topic.len() - 5];
     let ip = body["ip"].as_str().unwrap();
     let lum = if let Some(r) = body["lum"].as_u64() {r as u8} else {0};
-    state.set_camera_stat(name, ip, lum);
+    info!("Cam Stat {}: ip {}, lum {}", name, ip, lum);
+    state.set_camera_stat(name, ip, lum).await;
 }
 
-fn mqtt_cam_move(state: &AppState, topic: &str, body: &Value) {
-    print!("Cam move {}: {}\n", topic, body);
+async fn mqtt_cam_move(state: AppState, topic: String, body: Value) {
     let name = &topic[10..topic.len() - 5];
+    info!("Cam move {}: {}", name, body);
     state.for_mut_camera(name, |cam| {
         cam.record_movement();
         spawn_imager(cam.name.to_owned(), cam.ip.to_owned());
-    });
+    }).await;
 }
 
 #[actix_web::main]
@@ -115,7 +112,7 @@ async fn main() -> io::Result<()> {
     env_logger::init();
     let state = AppState::new();
 
-    let mqtt_server = MQTTServer::new(state.clone());
+    let mqtt_server = MQTTServer::new(state.clone()).await;
     mqtt_server.subscribe("home/cams/+/stat", mqtt_cam_stat).await;
     mqtt_server.subscribe("home/cams/+/move", mqtt_cam_move).await;
 

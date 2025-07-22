@@ -1,13 +1,9 @@
-use std::{collections::HashMap, net::UdpSocket, sync::{Arc}, thread};
-
-/*use actix_web::{http::Error, web::Bytes};
-use futures_core::Stream;
-
-use crate::utils::Timer;*/
-
+use std::{collections::HashMap, future::Future, sync::Arc};
+use log::info;
+use tokio::{net::UdpSocket, task};
 
 pub trait StreamReceiverState {
-    fn set_stream_image(&self, stream_id: u8, data: Arc<Vec<u8>>);
+    fn set_stream_image(&self, stream_id: u8, data: Arc<Vec<u8>>) -> impl Future<Output=()> + Send;
 }
 
 #[derive(Clone)]
@@ -22,19 +18,25 @@ pub struct StreamReceiver<T: StreamReceiverState + Clone> {
     images: HashMap<u8, StreamImage>
 }
 
+pub trait StreamReceiverTrait {
+    fn recv_bytes(&mut self, stream_id: u8, img_id: u8, packet_id: u16, data: &[u8]) -> impl Future<Output=()> + Send;
+}
+
 
 impl<T: StreamReceiverState + 'static + Sync + Send + Clone> StreamReceiver<T> {
     pub fn init(state: T) {
         spawn_stream_receiver_thread(state);
     }
+}
 
-    pub fn recv_bytes(&mut self, stream_id: u8, img_id: u8, packet_id: u16, data: &[u8]) {
+impl<T: StreamReceiverState + 'static + Sync + Send + Clone> StreamReceiverTrait for StreamReceiver<T> {
+    async fn recv_bytes(&mut self, stream_id: u8, img_id: u8, packet_id: u16, data: &[u8]) {
         if !self.images.contains_key(&stream_id) {
             self.images.insert(stream_id, StreamImage { id: img_id, bytes: vec![] });
         }
         let image = self.images.get_mut(&stream_id).unwrap();
         if image.id != img_id {
-            self.state.set_stream_image(stream_id, Arc::new(image.bytes.clone()));
+            self.state.set_stream_image(stream_id, Arc::new(image.bytes.clone())).await;
             image.id = img_id;
             image.bytes.clear();
         }
@@ -45,22 +47,24 @@ impl<T: StreamReceiverState + 'static + Sync + Send + Clone> StreamReceiver<T> {
         }
         for i in 0..data.len() {
             image.bytes[start + i] = data[i];
-        }
+        }    
     }
+
 }
 
 fn spawn_stream_receiver_thread<T: StreamReceiverState + 'static + Sync + Send + Clone>(state: T) {
     let mut streamer = StreamReceiver{ images: HashMap::new(), state: Arc::new(state) };
-    thread::spawn(move || {
-        let socket = UdpSocket::bind("0.0.0.0:10999").unwrap();
+    task::spawn(async move {   
+        info!("Stream Receiver Started");     
+        let socket = UdpSocket::bind("0.0.0.0:10999").await.unwrap();
         let mut buf = [0; 520];
         loop {
-            let (len, _src) = socket.recv_from(&mut buf).unwrap();
+            let (len, _src) = socket.recv_from(&mut buf).await.unwrap();
             let stream_id = buf[0];
             let img_id = buf[1];
             let packet_id = ((buf[2] as u16) << 8) | (buf[3] as u16);
             let data = &buf[4..(4+len)];
-            streamer.recv_bytes(stream_id, img_id, packet_id, data);
+            streamer.recv_bytes(stream_id, img_id, packet_id, data).await;
         }
     });
 }
